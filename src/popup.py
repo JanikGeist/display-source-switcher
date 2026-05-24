@@ -1,66 +1,65 @@
 import time
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 _STYLE = """
-PopupWidget {
-    background: #2b2b2b;
-    border: 1px solid #555;
-    border-radius: 6px;
+QFrame#frame {
+    background: #1e1e1e;
+    border: 1px solid #2d2d2d;
+    border-radius: 10px;
 }
 QLabel#title {
-    color: #666;
+    color: #505050;
     font-size: 9px;
     letter-spacing: 1.5px;
-    padding: 0 2px;
 }
 QLabel#monitor_name {
-    color: #aaa;
+    color: #888;
     font-size: 11px;
     font-weight: bold;
-    padding: 0 2px;
+}
+QLabel#loading_label {
+    color: #505050;
+    font-size: 11px;
 }
 QPushButton {
-    background: #3c3c3c;
+    background: #2a2a2a;
     color: #ccc;
-    border: 1px solid #555;
-    border-radius: 4px;
-    padding: 5px 14px;
+    border: 1px solid #3a3a3a;
+    border-radius: 5px;
+    padding: 6px 0;
     font-size: 11px;
-    min-width: 80px;
+    min-width: 70px;
 }
 QPushButton:hover {
-    background: #484848;
-    border-color: #666;
+    background: #383838;
+    border-color: #555;
 }
 QPushButton:checked {
     background: #1a6fa8;
-    color: white;
-    border: 1px solid #2a7fb8;
-}
-QPushButton:disabled {
-    color: #555;
-    background: #333;
-    border-color: #444;
+    color: #fff;
+    border: 1px solid #2485c7;
 }
 QPushButton#close_btn {
     background: transparent;
-    color: #555;
+    color: #444;
     border: none;
     border-radius: 9px;
-    font-size: 15px;
-    font-weight: normal;
+    font-size: 14px;
     padding: 0;
     min-width: 18px;
     max-width: 18px;
@@ -69,9 +68,38 @@ QPushButton#close_btn {
 }
 QPushButton#close_btn:hover {
     background: #c0392b;
-    color: white;
+    color: #fff;
+}
+QFrame#separator {
+    background: #2d2d2d;
+    max-height: 1px;
+    min-height: 1px;
 }
 """
+
+
+class _FixedHeightStack(QStackedWidget):
+    """QStackedWidget that keeps its height equal to the tallest page.
+
+    Without this, switching from the loading page (short) to the buttons page
+    (taller) resizes the popup mid-animation, which looks jarring.
+    """
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if self.count():
+            max_h = max(self.widget(i).sizeHint().height() for i in range(self.count()))
+            from PySide6.QtCore import QSize
+            return QSize(sh.width(), max(sh.height(), max_h))
+        return sh
+
+    def minimumSizeHint(self):
+        msh = super().minimumSizeHint()
+        if self.count():
+            max_h = max(self.widget(i).minimumSizeHint().height() for i in range(self.count()))
+            from PySide6.QtCore import QSize
+            return QSize(msh.width(), max(msh.height(), max_h))
+        return msh
 
 
 class PopupWidget(QWidget):
@@ -87,14 +115,32 @@ class PopupWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(_STYLE)
 
-        self._main_layout = QVBoxLayout(self)
-        self._main_layout.setContentsMargins(10, 8, 10, 10)
-        self._main_layout.setSpacing(8)
-
         self._groups: dict[int, QButtonGroup] = {}
+        self._stacks: dict[int, _FixedHeightStack] = {}
         self._hidden_at: float = 0.0
 
-        # Header row: label on left, close button on right
+        # Outer layout provides shadow room (extra bottom margin for offset=5 shadow)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 10, 14, 20)
+        outer.setSpacing(0)
+
+        # Inner content frame — receives the drop shadow + dark background
+        self._frame = QFrame()
+        self._frame.setObjectName("frame")
+
+        shadow = QGraphicsDropShadowEffect(self._frame)
+        shadow.setBlurRadius(20)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        self._frame.setGraphicsEffect(shadow)
+
+        outer.addWidget(self._frame)
+
+        self._content = QVBoxLayout(self._frame)
+        self._content.setContentsMargins(14, 10, 14, 14)
+        self._content.setSpacing(10)
+
+        # Header
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(0)
@@ -110,28 +156,35 @@ class PopupWidget(QWidget):
 
         header.addWidget(title, stretch=1)
         header.addWidget(close_btn)
-        self._main_layout.addLayout(header)
+        self._content.addLayout(header)
 
     # ── public API ────────────────────────────────────────────────────────────
 
     def recently_hidden(self, ms: int = 300) -> bool:
         """True if the popup was hidden within the last `ms` milliseconds.
 
-        Used to debounce tray-icon clicks: when Qt.Popup closes on a tray click,
-        the tray's activated signal fires next — without this guard it would
-        immediately reopen the popup.
+        Guards against the tray icon click reopening the popup that Qt.Popup
+        just dismissed from that same click.
         """
         return (time.monotonic() - self._hidden_at) * 1000 < ms
 
     def set_monitors(self, monitors) -> None:
-        # Remove monitor rows but keep the header layout at index 0
-        while self._main_layout.count() > 1:
-            item = self._main_layout.takeAt(1)
+        # Remove monitor rows (everything after the header at index 0)
+        while self._content.count() > 1:
+            item = self._content.takeAt(1)
             if item.widget():
                 item.widget().deleteLater()
+            elif item.layout():
+                # clean up bare layouts if any
+                pass
         self._groups.clear()
+        self._stacks.clear()
 
-        for info in monitors:
+        for i, info in enumerate(monitors):
+            if i > 0:
+                sep = QFrame()
+                sep.setObjectName("separator")
+                self._content.addWidget(sep)
             self._add_row(info)
 
         self.adjustSize()
@@ -144,16 +197,14 @@ class PopupWidget(QWidget):
                 btn.setChecked(True)
 
     def set_monitor_loading(self, monitor_index: int) -> None:
-        group = self._groups.get(monitor_index)
-        if group:
-            for btn in group.buttons():
-                btn.setEnabled(False)
+        stack = self._stacks.get(monitor_index)
+        if stack:
+            stack.setCurrentIndex(0)
 
     def set_monitor_ready(self, monitor_index: int) -> None:
-        group = self._groups.get(monitor_index)
-        if group:
-            for btn in group.buttons():
-                btn.setEnabled(True)
+        stack = self._stacks.get(monitor_index)
+        if stack:
+            stack.setCurrentIndex(1)
 
     def show_near_tray(self, tray_geom) -> None:
         self.adjustSize()
@@ -183,37 +234,58 @@ class PopupWidget(QWidget):
     # ── overrides ─────────────────────────────────────────────────────────────
 
     def hideEvent(self, event) -> None:
-        # Record when we were hidden so recently_hidden() can debounce tray clicks
         self._hidden_at = time.monotonic()
         super().hideEvent(event)
 
     # ── private ───────────────────────────────────────────────────────────────
 
     def _add_row(self, info) -> None:
-        row = QFrame()
-        row.setStyleSheet("QFrame { background: transparent; }")
+        row = QWidget()
         row_layout = QVBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(4)
+        row_layout.setSpacing(6)
 
         name_label = QLabel(info.name)
         name_label.setObjectName("monitor_name")
         row_layout.addWidget(name_label)
 
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(4)
-        group = QButtonGroup(row)
+        stack = _FixedHeightStack()
+
+        # Page 0 — loading
+        loading_page = QWidget()
+        loading_layout = QHBoxLayout(loading_page)
+        loading_layout.setContentsMargins(0, 4, 0, 4)
+        loading_label = QLabel("Detecting…")
+        loading_label.setObjectName("loading_label")
+        loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        loading_layout.addWidget(loading_label)
+
+        # Page 1 — input buttons
+        buttons_page = QWidget()
+        btn_layout = QHBoxLayout(buttons_page)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(6)
+
+        group = QButtonGroup(buttons_page)
         group.setExclusive(True)
 
         for label_text, vcp_value in info.available_inputs.items():
             btn = QPushButton(label_text)
             btn.setCheckable(True)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             group.addButton(btn, vcp_value)
             btn_layout.addWidget(btn)
 
         group.idClicked.connect(
             lambda vcp_id, idx=info.index: self.input_selected.emit(idx, vcp_id)
         )
-        row_layout.addLayout(btn_layout)
-        self._main_layout.addWidget(row)
+
+        stack.addWidget(loading_page)   # index 0
+        stack.addWidget(buttons_page)   # index 1
+        stack.setCurrentIndex(0)
+
+        row_layout.addWidget(stack)
+        self._content.addWidget(row)
+
+        self._stacks[info.index] = stack
         self._groups[info.index] = group
