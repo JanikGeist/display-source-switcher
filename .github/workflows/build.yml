@@ -37,9 +37,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
-      - name: Build exe with PyInstaller
-        run: pyinstaller ScreenSwitchWidget-win.spec
-
       - name: Resolve version
         id: ver
         shell: bash
@@ -49,6 +46,18 @@ jobs:
           else
             echo "version=dev" >> $GITHUB_OUTPUT
           fi
+
+      - name: Stamp version and repo into binary
+        shell: python
+        run: |
+          import pathlib
+          pathlib.Path('src/version.py').write_text(
+              '__version__ = "${{ steps.ver.outputs.version }}"\n'
+              'GITHUB_REPO = "${{ github.repository }}"\n'
+          )
+
+      - name: Build exe with PyInstaller
+        run: pyinstaller ScreenSwitchWidget-win.spec
 
       - name: Build installer with Inno Setup
         shell: pwsh
@@ -82,18 +91,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stamp version and repo into binary
+        shell: python
+        run: |
+          import pathlib
+          pathlib.Path('src/version.py').write_text(
+              '__version__ = "${{ steps.ver.outputs.version }}"\n'
+              'GITHUB_REPO = "${{ github.repository }}"\n'
+          )
+
       - name: Build binary with PyInstaller
         run: pyinstaller ScreenSwitchWidget.spec
 
-      - name: Resolve version and package
+      - name: Package
         id: pkg
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-          else
-            VERSION=dev
-          fi
-          TARBALL="ScreenSwitchWidget-${VERSION}-linux.tar.gz"
+          TARBALL="ScreenSwitchWidget-${{ steps.ver.outputs.version }}-linux.tar.gz"
           tar czf "$TARBALL" -C dist ScreenSwitchWidget
           echo "tarball=$TARBALL" >> $GITHUB_OUTPUT
 

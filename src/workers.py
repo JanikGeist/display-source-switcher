@@ -1,3 +1,5 @@
+import logging
+
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 
@@ -62,3 +64,23 @@ class SetInputWorker(QRunnable):
             self.signals.finished.emit(self._info.index, self._vcp_value)
         except Exception as e:
             self.signals.error.emit(self._info.index, str(e))
+
+
+class _UpdateSignals(QObject):
+    update_available = Signal(str, str)  # version, html_url
+
+
+class CheckUpdateWorker(QRunnable):
+    def __init__(self):
+        super().__init__()
+        self.signals = _UpdateSignals()
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            from .updater import check_for_update
+            result = check_for_update()
+            if result:
+                self.signals.update_available.emit(result.version, result.url)
+        except Exception as exc:
+            logging.debug("Update check error: %s", exc)

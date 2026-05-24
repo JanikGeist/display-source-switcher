@@ -7,7 +7,7 @@ from .config import Config
 from .icons import make_tray_icon
 from .monitor_manager import MonitorInfo, MonitorManager
 from .popup import PopupWidget
-from .workers import DetectMonitorsWorker, ReadInputWorker, SetInputWorker
+from .workers import CheckUpdateWorker, DetectMonitorsWorker, ReadInputWorker, SetInputWorker
 
 _DP_VALUES = {15, 16}
 _HDMI_VALUES = {17, 18}
@@ -28,17 +28,21 @@ class TrayApp(QObject):
         self._window_mode = window_mode
 
         self._tray: QSystemTrayIcon | None = None
+        self._update_url: str = ""
+
         if not window_mode:
             self._tray = QSystemTrayIcon(self)
             self._tray.setIcon(make_tray_icon("loading"))
             self._tray.setToolTip("Screen Switch — detecting monitors…")
             self._tray.activated.connect(self._on_tray_activated)
+            self._tray.messageClicked.connect(self._on_message_clicked)
             menu = QMenu()
             menu.addAction("Refresh", self._refresh)
             menu.addSeparator()
             menu.addAction("Quit", QApplication.quit)
             self._tray.setContextMenu(menu)
             self._tray.show()
+            QTimer.singleShot(5000, self._check_update)
 
         self._popup = PopupWidget()
         self._popup.input_selected.connect(self._on_input_selected)
@@ -154,6 +158,31 @@ class TrayApp(QObject):
             self._tray.setIcon(make_tray_icon("loading"))
             self._tray.setToolTip("Screen Switch — refreshing…")
         self._start_detection()
+
+    @Slot()
+    def _check_update(self) -> None:
+        worker = CheckUpdateWorker()
+        worker.signals.update_available.connect(self._on_update_available)
+        self._pool.start(worker)
+
+    @Slot(str, str)
+    def _on_update_available(self, version: str, url: str) -> None:
+        logging.info("Update available: v%s", version)
+        self._update_url = url
+        if self._tray:
+            self._tray.showMessage(
+                "ScreenSwitchWidget update available",
+                f"Version {version} is ready — click here to download.",
+                QSystemTrayIcon.MessageIcon.Information,
+                10000,
+            )
+
+    @Slot()
+    def _on_message_clicked(self) -> None:
+        if self._update_url:
+            import webbrowser
+            webbrowser.open(self._update_url)
+            self._update_url = ""
 
     @Slot(QSystemTrayIcon.ActivationReason)
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
