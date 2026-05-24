@@ -3,6 +3,12 @@ from pathlib import Path
 from typing import Any
 import logging
 import sys
+import time
+
+# DDC/CI over DisplayPort is prone to truncated I2C packets (e.g. "unpack requires
+# a buffer of 8 bytes"). Retry a few times with a short pause before giving up.
+_RETRIES = 3
+_RETRY_DELAY = 0.1  # seconds between attempts
 
 
 @dataclass
@@ -95,15 +101,33 @@ class MonitorManager:
         return MonitorConfig(index=index, name="", inputs=dict(DEFAULT_INPUTS))
 
     def read_input(self, info: MonitorInfo) -> int:
-        with info.monitor as m:
-            result = m.get_input_source()
-            return result.value if hasattr(result, "value") else int(result)
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(_RETRIES):
+            if attempt:
+                time.sleep(_RETRY_DELAY)
+            try:
+                with info.monitor as m:
+                    result = m.get_input_source()
+                    return result.value if hasattr(result, "value") else int(result)
+            except Exception as exc:
+                last_exc = exc
+                logging.debug("read_input attempt %d/%d: %s", attempt + 1, _RETRIES, exc)
+        raise last_exc
 
     def set_input(self, info: MonitorInfo, vcp_value: int) -> None:
-        with info.monitor as m:
+        last_exc: Exception = RuntimeError("no attempts made")
+        for attempt in range(_RETRIES):
+            if attempt:
+                time.sleep(_RETRY_DELAY)
             try:
-                from monitorcontrol import InputSource
-                m.set_input_source(InputSource(vcp_value))
-            except (ImportError, ValueError):
-                # Non-standard VCP value or monitorcontrol unavailable (mock)
-                m.set_input_source(vcp_value)
+                with info.monitor as m:
+                    try:
+                        from monitorcontrol import InputSource
+                        m.set_input_source(InputSource(vcp_value))
+                    except (ImportError, ValueError):
+                        m.set_input_source(vcp_value)
+                return
+            except Exception as exc:
+                last_exc = exc
+                logging.debug("set_input attempt %d/%d: %s", attempt + 1, _RETRIES, exc)
+        raise last_exc
