@@ -7,7 +7,7 @@ from .config import Config
 from .icons import make_tray_icon
 from .monitor_manager import MonitorInfo, MonitorManager
 from .popup import PopupWidget
-from .workers import CheckUpdateWorker, DetectMonitorsWorker, ReadInputWorker, SetInputWorker
+from .workers import CheckUpdateWorker, DetectMonitorsWorker, ReadInputWorker, SetAndVerifyWorker
 
 _DP_VALUES = {15, 16}
 _HDMI_VALUES = {17, 18}
@@ -102,11 +102,9 @@ class TrayApp(QObject):
             return
 
         prev_value = info.current_input
-        info.current_input = vcp_value
-        self._update_tray_icon()
         self._popup.set_monitor_loading(monitor_index)
 
-        worker = SetInputWorker(self._manager, info, vcp_value)
+        worker = SetAndVerifyWorker(self._manager, info, vcp_value)
         worker.signals.finished.connect(self._on_set_done)
         worker.signals.error.connect(
             lambda idx, msg, prev=prev_value: self._on_set_error(idx, msg, prev)
@@ -115,6 +113,11 @@ class TrayApp(QObject):
 
     @Slot(int, int)
     def _on_set_done(self, monitor_index: int, vcp_value: int) -> None:
+        for info in self._monitors:
+            if info.index == monitor_index:
+                info.current_input = vcp_value
+                break
+        self._update_tray_icon()
         self._popup.set_monitor_ready(monitor_index)
         self._popup.set_input_active(monitor_index, vcp_value)
 
