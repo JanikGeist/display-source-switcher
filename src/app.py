@@ -158,9 +158,12 @@ class TrayApp(QObject):
     @Slot(QSystemTrayIcon.ActivationReason)
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            # Qt.Popup closes itself on outside clicks, which includes clicks on the
+            # tray icon. The activated signal fires right after, so guard against
+            # immediately reopening the popup that was just dismissed by that click.
             if self._popup.isVisible():
                 self._popup.hide()
-            else:
+            elif not self._popup.recently_hidden():
                 for info in self._monitors:
                     self._popup.set_monitor_loading(info.index)
                     self._start_read(info)
